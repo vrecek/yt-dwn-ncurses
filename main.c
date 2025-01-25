@@ -22,15 +22,18 @@ int main() {
     start_color();
     use_default_colors();
     
+    char *menu[] = { "Download from link", "Download from file", "Read config", "Quit" };
 
-    int    *term_size = get_window_size(stdscr);
-    char   *menu[]    = { "Download from link", "Download from file", "Quit" };
-    WINDOW *win       = newwin(term_size[1], term_size[0], 0, 0);
-    int menu_len = sizeof(menu) / sizeof(char*),
-        choice   = 0;
+    int menu_len   = sizeof(menu) / sizeof(char*),
+        choice     = 0,
+        term_width = getmaxx(stdscr);
 
+    WINDOW *win    = newwin(getmaxy(stdscr), term_width, 0, 0);
+    Config *config = init_config();
+    
 
     nodelay(win, TRUE);
+
 
     init_pair(1, COLOR_BLUE, -1);
     init_pair(2, COLOR_RED, -1);
@@ -44,19 +47,18 @@ int main() {
 
         box(win, 0, 0);
 
-        print_greeting(win, term_size[0]);   
-        print_buttons(win, menu, menu_len, &choice, 5);
+        print_greeting(win, term_width);   
+        print_buttons(win, menu, menu_len, &choice, 8, "[Main Menu]");
 
         wrefresh(win);
 
-        handle_mainmenu_input(win, menu, menu_len, &choice, term_size[0]);
+        handle_mainmenu_input(win, menu, menu_len, &choice, term_width);
     }
 
+    free(config);
 
     delwin(win); 
     endwin(); 
-
-    free(term_size);
 
     return 0;
 }

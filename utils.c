@@ -7,50 +7,22 @@
 #include <unistd.h>
 
 
-#define UpDownArrows \
-case 'w': \
-    *choice = (*choice == 0) ? btn_len-1 : *choice-1; \
-    break; \
-case 's': \
-    *choice = (*choice == btn_len-1) ? 0 : *choice+1; \
-    break; \
+#define BUF_SIZE 256
 
 
-typedef struct {
-    char id[16];
-    void (*fn)(WINDOW* win);
-} Element;
-
-
-const char *GREETING  = "Welcome to ",
-           *GREET_CLR = "video downloader";
-
-char url[128] = {0},
+char url[BUF_SIZE] = {0},
      msg[512] = {0};
 
 int elements_len = 0,
-    show_prompt  = 0;
+    show_prompt  = 0,
+    row15_color  = 4;
 
 time_t dwn_curr  = 0,
        dwn_start = 0;
 
-Element* elements = NULL;
+Element *elements = NULL;
+Config  *config   = NULL;
 
-
-
-int print_greeting_get_center(int scr_width, int greet_len)
-{
-    static int center = 0;
-    static int init   = 0;
-
-    if (!init)
-    {
-        center = (scr_width - greet_len - strlen(GREET_CLR)) / 2;
-        init   = 1;
-    }
-
-    return center;
-}
 
 
 void remove_element(char* id)
@@ -73,6 +45,16 @@ void remove_element(char* id)
             return;
         }
     }
+}
+
+
+int does_element_exist(char* id)
+{
+    for (size_t i = 0; i < elements_len; i++)
+        if ( !strcmp(elements[i].id, id) )
+            return 1;
+
+    return 0;
 }
 
 
@@ -103,7 +85,7 @@ int clear_return()
 
 void fn_show_url(WINDOW* win)
 {
-    char fbuff[128];
+    char fbuff[BUF_SIZE];
     sprintf(fbuff, "URL: %s", url);
     
     wattron(win, COLOR_PAIR(3));
@@ -122,16 +104,16 @@ void fn_show_empty_url(WINDOW* win)
 
 void fn_show_dwn_output(WINDOW* win)
 {
-    wattron(win, COLOR_PAIR(4));
+    wattron(win, COLOR_PAIR(row15_color));
     mvwprintw(win, 15, 5, msg);
-    wattroff(win, COLOR_PAIR(4));
+    wattroff(win, COLOR_PAIR(row15_color));
 }
 
 
-void refresh_download_output(WINDOW* win, int show_msg_output)
+void clear_row15(WINDOW* win)
 {
-    int  w    = getmaxx(win),
-         cond = w-2;
+    int w    = getmaxx(win),
+        cond = w-2;
 
     char buffer[w];
 
@@ -141,9 +123,33 @@ void refresh_download_output(WINDOW* win, int show_msg_output)
     buffer[cond] = '\0';
 
     mvwprintw(win, 15, 1, buffer);
+}
 
-    if (show_msg_output)
-        fn_show_dwn_output(win);
+
+void refresh_15row_output(WINDOW* win, void (*fn_trigger)(WINDOW* win))
+{
+    clear_row15(win);
+
+    if (fn_trigger != NULL)
+        fn_trigger(win);
+
+    wrefresh(win);
+}
+
+
+void paste_colored(WINDOW* win, int color, char* message)
+{
+    wattron(win, COLOR_PAIR(color));
+    mvwprintw(win, 15, 5, message);
+    wattroff(win, COLOR_PAIR(color));
+}
+
+
+void print_colored(WINDOW* win, int color, char* message)
+{
+    clear_row15(win);
+
+    paste_colored(win, color, message);
 
     wrefresh(win);
 }
@@ -153,13 +159,15 @@ void url_prompt(WINDOW* win)
 {
     mvwprintw(win, 15, 5, "Enter URL (q to cancel)");
 
-    char* ptr = url;
-    char  fbuff[128] = "> ";
+    char urlbuff[BUF_SIZE],
+         prntbuff[BUF_SIZE] = "> ";
+
+    char* ptr = urlbuff;
 
 
     while (1)
     {
-        mvwprintw(win, 16, 5, fbuff);
+        mvwprintw(win, 16, 5, prntbuff);
 
         char ch = wgetch(win);
 
@@ -167,7 +175,11 @@ void url_prompt(WINDOW* win)
         {
             if (ch == 'q')
             {
-                add_element("dwn_url", fn_show_url);
+                remove_element("dwn_empty");
+
+                if (url[0])
+                    add_element("dwn_url", fn_show_url);
+                    
                 break;
             }
 
@@ -179,7 +191,7 @@ void url_prompt(WINDOW* win)
                     remove_element("dwn_empty");
                 }
 
-                if ( !strcmp(fbuff, "> ") )
+                if ( !strcmp(prntbuff, "> ") )
                 {
                     url[0] = '\0';
                     remove_element("dwn_url");
@@ -188,17 +200,26 @@ void url_prompt(WINDOW* win)
                 }
 
                 add_element("dwn_url", fn_show_url);
+                strcpy(url, urlbuff);
+
                 break;
             }
 
             *ptr++ = ch;
             *ptr   = '\0';
 
-            sprintf(fbuff, "> %s", url);
+            sprintf(prntbuff, "> %s", urlbuff);
         }
 
         show_prompt = 0;
     }
+}
+
+
+void validate_ytdlp_command(char* buffer)
+{
+    if (config->format == AUDIO_ONLY)
+        strcat(buffer, " -x");
 }
 
 
@@ -212,11 +233,13 @@ int handle_dwnfromlink_input(WINDOW* win, char* buttons[], int btn_len, int* cho
         UpDownArrows;
 
         case '\n':
-            msg[0] = '\0';
+            row15_color = 4;
+            msg[0]      = '\0';
+
             remove_element("dwn_output");
             remove_element("dwn_url");
 
-            refresh_download_output(win, 0);
+            refresh_15row_output(win, NULL);
 
             if ( !strcmp(buttons[*choice], "Back") )
                 return clear_return();
@@ -226,7 +249,7 @@ int handle_dwnfromlink_input(WINDOW* win, char* buttons[], int btn_len, int* cho
 
             else if ( !strcmp(buttons[*choice], "Download") )
             {
-                if (!url[0])
+                if (!url[0] || does_element_exist("dwn_empty"))
                 {
                     add_element("dwn_empty", fn_show_empty_url);
 
@@ -238,7 +261,7 @@ int handle_dwnfromlink_input(WINDOW* win, char* buttons[], int btn_len, int* cho
                 remove_element("dwn_url");
 
                 strcpy(msg, "Starting download...");    
-                refresh_download_output(win, 1);
+                refresh_15row_output(win, fn_show_dwn_output);
                 
                 sleep(1);
 
@@ -247,7 +270,8 @@ int handle_dwnfromlink_input(WINDOW* win, char* buttons[], int btn_len, int* cho
                 int screen_width = getmaxx(win) - 8,
                     skip_buffer  = 0;
 
-                sprintf(buffer, "yt-dlp '%s'", url);
+                sprintf(buffer, "yt-dlp -N 2 -P '%s' '%s'", config->download_path, url);
+                validate_ytdlp_command(buffer);
 
                 pipe = popen(buffer, "r");
 
@@ -262,7 +286,7 @@ int handle_dwnfromlink_input(WINDOW* win, char* buttons[], int btn_len, int* cho
                     if (strlen(buffer) > screen_width)
                     {
                         strcpy(msg, "Downloading, please wait...");
-                        refresh_download_output(win, 1);
+                        refresh_15row_output(win, fn_show_dwn_output);
 
                         skip_buffer = 1;
                         continue;
@@ -270,13 +294,14 @@ int handle_dwnfromlink_input(WINDOW* win, char* buttons[], int btn_len, int* cho
                     else
                         strcpy(msg, buffer);
 
-                    refresh_download_output(win, 1);
+                    refresh_15row_output(win, fn_show_dwn_output);
                 }
 
                 pclose(pipe);
 
                 url[0] = '\0';
 
+                row15_color = 3;
                 strcpy(msg, "Download completed");
                 add_element("dwn_output", fn_show_dwn_output);
             }
@@ -285,13 +310,53 @@ int handle_dwnfromlink_input(WINDOW* win, char* buttons[], int btn_len, int* cho
     return 0;
 }
 
+
+void handle_dnwfromfile(WINDOW* win, VideoItem* items, size_t items_len)
+{
+    int successes = 0;
+
+    for (int i = 0; i < items_len; i++)
+    {
+        char buffer[BUF_SIZE];
+
+        sprintf(buffer, "Downloading: %d/%d (%s)", successes+1, items_len, items[i].name);
+        print_colored(win, 4, buffer);
+
+        sleep(1);
+
+        sprintf(buffer, "yt-dlp -N 2 -o '%s' -P '%s' '%s'", items[i].name, config->download_path, items[i].url);
+        validate_ytdlp_command(buffer);
+
+        FILE* pipe = popen(buffer, "r");
+
+        if (!pipe)
+        {
+            sprintf(buffer, "[ERROR] Downloading #%d video failed.", successes+1);
+            print_colored(win, 2, buffer);
+
+            sleep(1);
+
+            continue;
+        }
+
+        while ( fgets(buffer, sizeof(buffer), pipe) != NULL )
+        {}
+
+        successes++;
+
+        fclose(pipe);
+    }
+
+    sprintf(msg, "Finished. Downloaded %d/%d videos", successes, items_len);
+}
+
+
 void download_from_link_handler(WINDOW* win, int scr_width)
 {
     char *menu[]  = { "Enter url...", "Download", "Back" };
 
-    int choice     = 0,
-        btn_len    = sizeof(menu) / sizeof(char*),
-        should_ret = 0;
+    int choice  = 0,
+        btn_len = sizeof(menu) / sizeof(char*);
 
     while (1)
     {
@@ -311,8 +376,7 @@ void download_from_link_handler(WINDOW* win, int scr_width)
         box(win, 0, 0);
 
         print_greeting(win, scr_width);
-        print_buttons(win, menu, btn_len, &choice, 7);
-        mvwprintw(win, 5, 5, "[Download from link]");
+        print_buttons(win, menu, btn_len, &choice, 8, "[Download from link]");
 
         for (int i = 0; i < elements_len; i++)
             elements[i].fn(win);
@@ -323,6 +387,89 @@ void download_from_link_handler(WINDOW* win, int scr_width)
         wrefresh(win);
     }
 }
+
+
+void download_from_file_handler(WINDOW* win, int scr_width)
+{
+    char *menu[] = { "Download", "Back" };
+
+    int choicev  = 0,
+        btn_len  = sizeof(menu) / sizeof(char*),
+        files_nr = 0,
+        msg_clr  = 1;
+
+    int       *choice = &choicev;
+    FILE      *file   = fopen("videos.txt", "r");
+    VideoItem *items  = NULL;
+
+
+    if (file == NULL)
+    {
+        msg_clr = 2;
+        sprintf(msg, "File 'videos.txt' could not be opened");
+    }   
+    else
+    {
+        char buffer[BUF_SIZE];
+
+        while ( fgets(buffer, sizeof(buffer), file) )
+        {
+            char* token;
+            int   name_len;
+
+            files_nr++;
+
+            items = (VideoItem*)realloc(items, sizeof(VideoItem) * files_nr);
+            
+            token = strtok(buffer, " ");
+            strcpy( items[files_nr-1].url, token );
+
+            token    = strtok(NULL, " ");
+            name_len = strlen(token);
+
+            if (token[name_len-1] == '\n')
+                token[name_len-1] = '\0';
+
+            strcpy( items[files_nr-1].name, token );
+        }
+
+        msg_clr = 3;
+        sprintf(msg, "Found in 'videos.txt': %d", files_nr);
+
+        fclose(file);
+    }
+
+
+    while (1)
+    {
+        werase(win);
+
+        box(win, 0, 0);
+
+        print_greeting(win, scr_width);
+        print_buttons(win, menu, btn_len, choice, 8, "[Download from file]");
+
+        paste_colored(win, msg_clr, msg);
+        
+        switch (wgetch(win))
+        {
+            UpDownArrows;    
+
+            case '\n':
+                if ( !strcmp(menu[*choice], "Back") )
+                {
+                    free(items);
+                    return; 
+                }
+
+                else if ( !strcmp(menu[*choice], "Download") )
+                    handle_dnwfromfile(win, items, files_nr); 
+        }
+
+        wrefresh(win);
+    }
+}
+
 
 void handle_mainmenu_input(WINDOW* win, char* buttons[], int btn_len, int* choice, int scr_width)
 {
@@ -336,11 +483,17 @@ void handle_mainmenu_input(WINDOW* win, char* buttons[], int btn_len, int* choic
 
             else if ( !strcmp(buttons[*choice], "Download from link") )
                 download_from_link_handler(win, scr_width);
+
+            else if ( !strcmp(buttons[*choice], "Download from file") )
+                download_from_file_handler(win, scr_width);
     }
 }
 
-void print_buttons(WINDOW* win, char* buttons[], int btn_len, int* choice, int offsety)
+
+void print_buttons(WINDOW* win, char* buttons[], int btn_len, int* choice, int offsety, char* label)
 {
+    mvwprintw(win, 5, 5, label);
+
     for (int i = 0; i < btn_len; i++)
     {
         if (i == *choice)
@@ -354,10 +507,22 @@ void print_buttons(WINDOW* win, char* buttons[], int btn_len, int* choice, int o
     }
 }
 
+
 void print_greeting(WINDOW* win, int scr_width)
 {
-    int greet_len = strlen(GREETING),
-        center    = print_greeting_get_center(scr_width, greet_len);
+    const static char *GREETING  = "Welcome to ",
+                      *GREET_CLR = "video downloader";
+
+    static int center = 0,      
+               init   = 0;
+
+    int greet_len = strlen(GREETING);
+
+    if (!init)
+    {
+        center = (scr_width - greet_len - strlen(GREET_CLR)) / 2;
+        init   = 1;
+    }
 
     mvwprintw(win, 1, center, GREETING);
 
@@ -366,11 +531,13 @@ void print_greeting(WINDOW* win, int scr_width)
     wattroff(win, COLOR_PAIR(1));
 }
 
-int* get_window_size(const WINDOW* win)
+
+Config* init_config()
 {
-    int* arr = (int*)malloc(2 * sizeof(int));
+    config = (Config*)malloc(sizeof(Config));
 
-    getmaxyx(win, arr[1], arr[0]);
+    strcpy(config->download_path, "/home/vrecek/Downloads");
+    config->format = AUDIO_VIDEO;
 
-    return arr;
+    return config;
 }
