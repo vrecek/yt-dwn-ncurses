@@ -30,7 +30,7 @@ int main() {
 
     WINDOW *win    = newwin(getmaxy(stdscr), term_width, 0, 0);
     Config *config = init_config();
-    
+
 
     nodelay(win, TRUE);
 
@@ -59,6 +59,8 @@ int main() {
 
     delwin(win); 
     endwin(); 
+
+    printf("\n");
 
     return 0;
 }

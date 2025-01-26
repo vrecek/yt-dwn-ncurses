@@ -13,6 +13,8 @@ case 's': \
     *choice = (*choice == btn_len-1) ? 0 : *choice+1; \
     break; \
 
+#define BUF_SIZE 256
+
 
 typedef enum {
     AUDIO_ONLY,
@@ -21,18 +23,20 @@ typedef enum {
 
 
 typedef struct {
-    char download_path[128];
-    FileFormat format;
+    char        output_path[BUF_SIZE];
+    char        audio_ext[BUF_SIZE];
+    FileFormat  type;
+    int         success;
 } Config;
 
 typedef struct {
-    char id[16];
+    char id[32];
     void (*fn)(WINDOW* win);
 } Element;
 
 typedef struct {
-    char url[128];
-    char name[64];
+    char url[BUF_SIZE];
+    char name[BUF_SIZE];
 } VideoItem;
 
 

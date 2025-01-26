@@ -7,8 +7,6 @@
 #include <unistd.h>
 
 
-#define BUF_SIZE 256
-
 
 char url[BUF_SIZE] = {0},
      msg[512] = {0};
@@ -137,10 +135,10 @@ void refresh_15row_output(WINDOW* win, void (*fn_trigger)(WINDOW* win))
 }
 
 
-void paste_colored(WINDOW* win, int color, char* message)
+void paste_colored(WINDOW* win, int color, char* message, int y)
 {
     wattron(win, COLOR_PAIR(color));
-    mvwprintw(win, 15, 5, message);
+    mvwprintw(win, y, 5, message);
     wattroff(win, COLOR_PAIR(color));
 }
 
@@ -149,7 +147,7 @@ void print_colored(WINDOW* win, int color, char* message)
 {
     clear_row15(win);
 
-    paste_colored(win, color, message);
+    paste_colored(win, color, message, 15);
 
     wrefresh(win);
 }
@@ -216,10 +214,15 @@ void url_prompt(WINDOW* win)
 }
 
 
-void validate_ytdlp_command(char* buffer)
+void validate_ytdlp_command(char* command)
 {
-    if (config->format == AUDIO_ONLY)
-        strcat(buffer, " -x");
+    if (config->type == AUDIO_ONLY)
+    {
+        char buffer[64];
+
+        sprintf(buffer, " -x --audio-format %s", config->audio_ext);
+        strcat(command, buffer);
+    }
 }
 
 
@@ -270,7 +273,7 @@ int handle_dwnfromlink_input(WINDOW* win, char* buttons[], int btn_len, int* cho
                 int screen_width = getmaxx(win) - 8,
                     skip_buffer  = 0;
 
-                sprintf(buffer, "yt-dlp -N 2 -P '%s' '%s'", config->download_path, url);
+                sprintf(buffer, "yt-dlp -N 2 -P '%s' '%s'", config->output_path, url);
                 validate_ytdlp_command(buffer);
 
                 pipe = popen(buffer, "r");
@@ -322,9 +325,7 @@ void handle_dnwfromfile(WINDOW* win, VideoItem* items, size_t items_len)
         sprintf(buffer, "Downloading: %d/%d (%s)", successes+1, items_len, items[i].name);
         print_colored(win, 4, buffer);
 
-        sleep(1);
-
-        sprintf(buffer, "yt-dlp -N 2 -o '%s' -P '%s' '%s'", items[i].name, config->download_path, items[i].url);
+        sprintf(buffer, "yt-dlp -N 2 -o '%s' -P '%s' '%s'", items[i].name, config->output_path, items[i].url);
         validate_ytdlp_command(buffer);
 
         FILE* pipe = popen(buffer, "r");
@@ -389,6 +390,60 @@ void download_from_link_handler(WINDOW* win, int scr_width)
 }
 
 
+void read_config_handler(WINDOW* win, int scr_width)
+{
+    int   choice = 0;
+    char *menu[] = { "Back" };
+    char  buffer[BUF_SIZE],
+          format[32];
+
+
+    if (config->type == AUDIO_ONLY)
+        strcpy(format, "Audio only");
+    else if (config->type == AUDIO_VIDEO)
+        strcpy(format, "Audio+Video");
+
+
+    while (1)
+    {
+        werase(win);
+
+        box(win, 0, 0);
+
+        print_greeting(win, scr_width);
+        print_buttons(win, menu, 1, &choice, 20, "[Configuration details]");
+
+        paste_colored(win, 4, "config.conf", 8);
+
+
+        sprintf(buffer, "[Output path]:    %s", config->output_path);
+        mvwprintw(win, 10, 5, buffer);
+
+        sprintf(buffer, "[Format type]:    %s", format);
+        mvwprintw(win, 11, 5, buffer);
+
+        sprintf(buffer, "[Audio-only ext]: %s", config->audio_ext);
+        mvwprintw(win, 12, 5, buffer);
+
+
+        if (!config->success)
+        {
+            wattron(win, COLOR_PAIR(2));
+
+            mvwprintw(win, 16, 5, "[ERROR] Failed reading 'config.conf'. Default values will be used");
+            mvwprintw(win, 17, 5, "[ERROR] Check your configuration file");
+
+            wattroff(win, COLOR_PAIR(2));
+        }
+
+        if (wgetch(win) == '\n')
+            return;
+
+        wrefresh(win);
+    }
+}
+
+
 void download_from_file_handler(WINDOW* win, int scr_width)
 {
     char *menu[] = { "Download", "Back" };
@@ -433,8 +488,12 @@ void download_from_file_handler(WINDOW* win, int scr_width)
             strcpy( items[files_nr-1].name, token );
         }
 
-        msg_clr = 3;
-        sprintf(msg, "Found in 'videos.txt': %d", files_nr);
+        if (!files_nr)
+            msg_clr = 2;
+        else
+            msg_clr = 3;
+
+        sprintf(msg, "Videos in 'videos.txt': %d", files_nr);
 
         fclose(file);
     }
@@ -449,7 +508,7 @@ void download_from_file_handler(WINDOW* win, int scr_width)
         print_greeting(win, scr_width);
         print_buttons(win, menu, btn_len, choice, 8, "[Download from file]");
 
-        paste_colored(win, msg_clr, msg);
+        paste_colored(win, msg_clr, msg, 15);
         
         switch (wgetch(win))
         {
@@ -463,7 +522,12 @@ void download_from_file_handler(WINDOW* win, int scr_width)
                 }
 
                 else if ( !strcmp(menu[*choice], "Download") )
+                {
+                    if (!files_nr)
+                        break;
+
                     handle_dnwfromfile(win, items, files_nr); 
+                }
         }
 
         wrefresh(win);
@@ -486,16 +550,28 @@ void handle_mainmenu_input(WINDOW* win, char* buttons[], int btn_len, int* choic
 
             else if ( !strcmp(buttons[*choice], "Download from file") )
                 download_from_file_handler(win, scr_width);
+
+            else if ( !strcmp(buttons[*choice], "Read config") )
+                read_config_handler(win, scr_width);
     }
 }
 
 
 void print_buttons(WINDOW* win, char* buttons[], int btn_len, int* choice, int offsety, char* label)
 {
+    int clr = 0;
+
     mvwprintw(win, 5, 5, label);
 
     for (int i = 0; i < btn_len; i++)
     {
+        if ( !strcmp(buttons[i], "Back") )
+            clr = 4;
+        else if ( !strcmp(buttons[i], "Quit") )
+            clr = 2;
+
+        wattron(win, COLOR_PAIR(clr));
+
         if (i == *choice)
         {
             wattron(win, A_REVERSE);
@@ -504,6 +580,8 @@ void print_buttons(WINDOW* win, char* buttons[], int btn_len, int* choice, int o
         }
         else
             mvwprintw(win, offsety+i, 5, buttons[i]);
+
+        wattroff(win, COLOR_PAIR(clr));
     }
 }
 
@@ -524,10 +602,10 @@ void print_greeting(WINDOW* win, int scr_width)
         init   = 1;
     }
 
-    mvwprintw(win, 1, center, GREETING);
+    mvwprintw(win, 2, center, GREETING);
 
     wattron(win, COLOR_PAIR(1));
-    mvwprintw(win, 1, center+greet_len, GREET_CLR);
+    mvwprintw(win, 2, center+greet_len, GREET_CLR);
     wattroff(win, COLOR_PAIR(1));
 }
 
@@ -536,8 +614,53 @@ Config* init_config()
 {
     config = (Config*)malloc(sizeof(Config));
 
-    strcpy(config->download_path, "/home/vrecek/Downloads");
-    config->format = AUDIO_VIDEO;
+    int   len;
+    char* token;
+    char  buffer[BUF_SIZE],
+          key[BUF_SIZE];
+
+    FILE* file = fopen("config.conf", "r");
+
+
+    if (file == NULL)
+    {
+        strcpy(config->output_path, "~/Downloads");
+        strcpy(config->audio_ext, "mp3");
+        config->type    = AUDIO_VIDEO;
+        config->success = 0;
+
+        return config;
+    }
+
+    while ( fgets(buffer, sizeof(buffer), file) != NULL )
+    {
+        if (buffer[0] == '#' || buffer[0] == '\n')
+            continue;
+
+        token = strtok(buffer, " ");
+
+        strcpy(key, token);
+
+        token = strtok(NULL, " ");
+        len   = strlen(token);
+
+        if (token[len-1] == '\n')
+            token[len-1] = '\0';
+
+
+        if ( !strcmp(key, "output_path") )
+            strcpy(config->output_path, token);
+
+        else if ( !strcmp(key, "audio_ext") )
+            strcpy(config->audio_ext, token);
+
+        else if ( !strcmp(key, "type") )
+            config->type = token[0] - '0';
+    }
+
+    fclose(file);
+
+    config->success = 1;
 
     return config;
 }
