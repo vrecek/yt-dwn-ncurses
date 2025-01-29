@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "utils.h"
+#include "utils_public.h"
 
 
 int main() {
@@ -32,9 +32,6 @@ int main() {
     Config *config = init_config();
 
 
-    nodelay(win, TRUE);
-
-
     init_pair(1, COLOR_BLUE, -1);
     init_pair(2, COLOR_RED, -1);
     init_pair(3, COLOR_GREEN, -1);
@@ -52,8 +49,31 @@ int main() {
 
         wrefresh(win);
 
-        handle_mainmenu_input(win, menu, menu_len, &choice, term_width);
+        switch (wgetch(win))
+        {
+            case 'w': 
+                choice = (choice == 0) ? menu_len-1 : choice-1; 
+                break; 
+
+            case 's':
+                choice = (choice == menu_len-1) ? 0 : choice+1; 
+                break; 
+
+            case '\n':
+                if ( !strcmp(menu[choice], "Quit") )
+                    choice = 'q';
+
+                else if ( !strcmp(menu[choice], "Download from link") )
+                    download_from_link_menu(win, term_width);
+
+                else if ( !strcmp(menu[choice], "Download from file") )
+                    download_from_file_menu(win, term_width);
+
+                else if ( !strcmp(menu[choice], "Read config") )
+                    read_config_menu(win, term_width);
+        }
     }
+    
 
     free(config);
 
