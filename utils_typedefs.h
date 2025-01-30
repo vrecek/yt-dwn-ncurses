@@ -26,6 +26,13 @@ typedef enum {
 
 
 typedef struct {
+    WINDOW* win;
+    int x;
+    int y;
+} AnimationArgs;
+
+
+typedef struct {
     char        output_path[BUF_SIZE];
     char        audio_ext[BUF_SIZE];
     char        cookies[BUF_SIZE];
