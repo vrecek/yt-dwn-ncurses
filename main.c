@@ -6,10 +6,7 @@
 
 
 int main() {
-    #ifndef __linux__
-        printf("[ERROR] Available only on Linux\n");
-        return 1;
-    #endif
+    check_availability();
 
     initscr(); 
     cbreak();
@@ -26,8 +23,9 @@ int main() {
 
     start_color();
     use_default_colors();
+    init_config();
     
-    char *menu[] = { "Download from link", "Download from file", "Read config", "Quit" };
+    char *menu[] = { "Download from link", "Download from file", "Read config", "About", "Quit" };
 
     int btn_len    = sizeof(menu) / sizeof(char*),
         vchoice    = 0,
@@ -35,9 +33,7 @@ int main() {
 
     int *choice = &vchoice;
 
-    WINDOW *win    = newwin(getmaxy(stdscr), term_width, 0, 0);
-    Config *config = init_config();
-
+    WINDOW *win = newwin(getmaxy(stdscr), term_width, 0, 0);
 
     init_pair(1, COLOR_BLUE, -1);
     init_pair(2, COLOR_RED, -1);
@@ -53,6 +49,7 @@ int main() {
 
         print_greeting(win, term_width);   
         print_buttons(win, menu, btn_len, choice, 8, "[Main Menu]");
+        paste_legend(win);
 
         wrefresh(win);
 
@@ -61,23 +58,18 @@ int main() {
             UpDownArrows;
 
             case '\n':
-                if ( !strcmp(menu[vchoice], "Quit") )
-                    vchoice = 'q';
-
-                else if ( !strcmp(menu[vchoice], "Download from link") )
-                    download_from_link_menu(win, term_width);
-
-                else if ( !strcmp(menu[vchoice], "Download from file") )
-                    download_from_file_menu(win, term_width);
-
-                else if ( !strcmp(menu[vchoice], "Read config") )
-                    read_config_menu(win, term_width);
+                switch (vchoice)
+                {
+                    case 0: download_from_link_menu(win, term_width); break;
+                    case 1: download_from_file_menu(win, term_width); break;
+                    case 2: read_config_menu(win, term_width);  break;
+                    case 3: about_menu(win, term_width); break;
+                    case 4: vchoice = 'q'; break;
+                }
         }
     }
     
-
-    free(config);
-
+    exit_cleaner();
     delwin(win); 
     endwin(); 
 

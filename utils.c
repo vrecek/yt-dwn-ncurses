@@ -118,7 +118,7 @@ void add_element(char* id, void(*fn)(WINDOW* win))
     elements_len++;
     elements = (Element*)realloc(elements, sizeof(Element) * elements_len);
 
-    strcpy(elements[elements_len-1].id, id);
+    strlcpy(elements[elements_len-1].id, id, 32);
     elements[elements_len-1].fn = fn;
 }
 
@@ -153,7 +153,7 @@ void craft_ytdlp_command(char* buffer, char* url, char* name)
         len = strlen(buffer);
     }
 
-    snprintf(buffer+len, BUF_SIZE-len, " -- '%s'", url);
+    snprintf(buffer+len, BUF_SIZE-len, " -- '%s' 2>&1", url);
 }
 
 
@@ -173,6 +173,42 @@ int clear_return()
 }
 
 
+void open_path(char* path)
+{
+    char buffer[BUF_SIZE];
+
+    snprintf(buffer, BUF_SIZE, "xdg-open %s", path);
+    system(buffer);
+}
+
+
+void update_config_text_output(char* format, char* cookies)
+{
+    if (config->type == AUDIO_ONLY)
+        strcpy(format, "Audio only");
+    else if (config->type == AUDIO_VIDEO)
+        strcpy(format, "Audio+Video");
+
+
+    if (!config->cookies[0] || config->cookies[0] == '0')
+        strcpy(cookies, "None");
+    else
+        strlcpy(cookies, config->cookies, BUF_SIZE);
+}
+
+
+int check_download_error(char* output, char* error_container)
+{
+    if (strstr(output, "valid URL"))
+        strcpy(error_container, "[ERROR] URL is incorrect");
+
+    else if (strstr(output, "Video unavailable"))
+        strcpy(error_container, "[ERROR] Video is unavailable");
+
+    return error_container[0];
+}
+
+
 
 /*  DOWNLOAD OUTPUT INDICATORS  */
 
@@ -185,7 +221,7 @@ void fn_show_dwn_output(WINDOW* win)
 void fn_show_url(WINDOW* win)
 {
     char fbuff[BUF_SIZE];
-    sprintf(fbuff, "URL: %s", f_url);
+    snprintf(fbuff, BUF_SIZE, "URL: %s", f_url);
     
     paste_colored(win, 3, 5, 19, fbuff);
 }
@@ -194,7 +230,7 @@ void fn_show_url(WINDOW* win)
 void fn_show_name(WINDOW* win)
 {
     char fbuff[BUF_SIZE];
-    sprintf(fbuff, "NAME: %s", f_name);
+    snprintf(fbuff, BUF_SIZE, "NAME: %s", f_name);
     
     paste_colored(win, 3, 5, 20, fbuff);
 }
@@ -211,41 +247,64 @@ void fn_show_empty_url(WINDOW* win)
 
 void handle_dnwfromfile(WINDOW* win, VideoItem* items, size_t items_len)
 {
-    int           successes = 0;
-    char          buffer[BUF_SIZE];
-    AnimationArgs args      = {win, 5, 16};
+    int successes    = 0,
+        skip_buffer  = 0,
+        screen_width = getmaxx(win) - 10;
+
+    char buffer[BUF_SIZE],
+         error[BUF_SIZE];
+
+    AnimationArgs args = {win, 5, 16};
     pthread_t     animation_th;
+
+    FILE* pipe = NULL;
 
 
     init_animation(&animation_th, &args);
 
     for (int i = 0; i < items_len; i++)
     {
-        pthread_mutex_lock(&th_lock);
+        error[0] = '\0';
 
-        sprintf(buffer, "Downloading: %d/%d (%s)", successes+1, items_len, items[i].name);
-        print_colored(win, 4, 5, 15, buffer);
+        pthread_mutex_lock(&th_lock);
+        print_colored(win, 4, 5, 15, "Fetching URL...");
+        pthread_mutex_unlock(&th_lock);
 
         craft_ytdlp_command(buffer, items[i].url, items[i].name);
 
-        FILE* pipe = popen(buffer, "r");
+        pipe = popen(buffer, "r");
 
         if (!pipe)
-        {
-            sprintf(buffer, "[ERROR] Downloading #%d video failed.", successes+1);
-            print_colored(win, 2, 5, 15, buffer);
-
-            sleep(1);
-
             continue;
-        }
 
-        pthread_mutex_unlock(&th_lock);
 
         while ( fgets(buffer, sizeof(buffer), pipe) != NULL )
-        {}
+        {
+            if (check_download_error(buffer, error))
+            {
+                pthread_mutex_lock(&th_lock);
 
-        successes++;
+                print_colored(win, 2, 5, 15, error);
+                sleep(2);
+
+                pthread_mutex_unlock(&th_lock);
+
+                break;
+            }
+
+            if (skip_buffer) continue;
+
+            snprintf(buffer, BUF_SIZE, "Downloading: %d/%d (%s)", i+1, items_len, items[i].name);
+
+            pthread_mutex_lock(&th_lock);
+            print_colored(win, 4, 5, 15, buffer);
+            pthread_mutex_unlock(&th_lock);
+
+            skip_buffer = 1;
+        }
+
+        skip_buffer = 0;
+        !error[0] && successes++;
 
         fclose(pipe);
     }
@@ -256,9 +315,22 @@ void handle_dnwfromfile(WINDOW* win, VideoItem* items, size_t items_len)
 }
 
 
-void download_from_file_menu_set_videoobject(FILE* file, int* files_nr, int* msg_clr, VideoItem** items)
+void download_from_file_menu_set_videoobject(int* files_nr, int* msg_clr, VideoItem** items)
 {
-    char buffer[BUF_SIZE];
+    char  buffer[BUF_SIZE];
+    FILE* file = fopen("videos.txt", "r");
+
+
+    *items    = NULL;
+    *files_nr = 0;
+
+    if (file == NULL)
+    {
+        *msg_clr = 2;
+        sprintf(msg, "File 'videos.txt' could not be opened");
+
+        return;
+    }  
 
     while ( fgets(buffer, sizeof(buffer), file) )
     {
@@ -283,18 +355,12 @@ void download_from_file_menu_set_videoobject(FILE* file, int* files_nr, int* msg
         strcpy( (*items)[files_sub].name, token );
     }
 
-
-    if (! *files_nr)
-        *msg_clr = 2;
-    else
-        *msg_clr = 3;
+    if (! *files_nr) *msg_clr = 2;
+    else             *msg_clr = 3;
 
     sprintf(msg, "Videos in 'videos.txt': %d", *files_nr);
-
-
     fclose(file);
 }
-
 
 
 
@@ -316,12 +382,13 @@ void download_file_link(WINDOW* win)
     AnimationArgs args = {win, 5, 16};
     pthread_t     animation_th;
 
-    char buffer[512],
+    int screen_width = getmaxx(win) - 10,
+        skip_buffer  = 0;
+
+    char buffer[BUF_SIZE],
+         error[BUF_SIZE],
          frame[16];
-
-    int  screen_width = getmaxx(win) - 10,
-         skip_buffer  = 0;
-
+    
     FILE* pipe;
 
 
@@ -331,43 +398,51 @@ void download_file_link(WINDOW* win)
     clear_row(win, 19);
     clear_row(win, 20);
 
-    strcpy(msg, "Starting download...");    
-    print_colored(win, 4, 5, 15, msg);
+    print_colored(win, 4, 5, 15, "Fetching URL...");
 
     craft_ytdlp_command(buffer, f_url, f_name);
 
-    pipe = popen(buffer, "r");
+
+    pipe     = popen(buffer, "r");
+    error[0] = '\0';
 
     if (pipe == NULL)
         return;
+
 
     init_animation(&animation_th, &args);
 
     while ( fgets(buffer, sizeof(buffer), pipe) != NULL )
     {
-        if (skip_buffer || strlen(buffer) > screen_width)
-        {
-            strcpy(msg, "Downloading, please wait ");
+        if (check_download_error(buffer, error))
+            break;
 
-            skip_buffer = 1;
-        }
-        else
-            strcpy(msg, buffer);
-        
+        if (skip_buffer) continue;
+
         pthread_mutex_lock(&th_lock);
-        print_colored(win, 4, 5, 15, msg);
+        print_colored(win, 4, 5, 15, "Downloading, please wait");
         pthread_mutex_unlock(&th_lock);
+
+        skip_buffer = 1;
     }
 
     finish_animation(&animation_th);
-
     pclose(pipe);
 
-    f_url[0]    = '\0';
-    f_name[0]   = '\0';
-    row15_color = 3;
+    if (error[0])
+    {
+        strcpy(msg, error);
+        row15_color = 2;
+    }
+    else
+    {
+        strcpy(msg, "Download completed");
+        row15_color = 3;
+    }
 
-    strcpy(msg, "Download completed");
+    f_url[0]  = '\0';
+    f_name[0] = '\0';
+
     add_element("dwn_output", fn_show_dwn_output);
 }
 
@@ -400,29 +475,13 @@ int handle_dwnfromlink(WINDOW* win, char* buttons[], int btn_len, int* choice)
 
             clear_row(win, 15);
 
-            if ( !strcmp(buttons[*choice], "Back") )
+            switch (*choice)
             {
-                nodelay(win, FALSE);
-
-                return clear_return();
+                case 0: nodelay(win, TRUE); show_url_prompt  = 1; break;
+                case 1: nodelay(win, TRUE); show_name_prompt = 1; break;
+                case 2: download_file_link(win); break;
+                case 3: nodelay(win, FALSE); return clear_return();
             }
-
-            else if ( !strcmp(buttons[*choice], "Enter url...") )
-            {
-                nodelay(win, TRUE);
-
-                show_url_prompt = 1;
-            }
-
-            else if ( !strcmp(buttons[*choice], "Enter filename...") )
-            {
-                nodelay(win, TRUE);
-
-                show_name_prompt = 1;
-            }
-
-            else if ( !strcmp(buttons[*choice], "Download") )
-                download_file_link(win);
     }
 
     return 0;
@@ -552,7 +611,7 @@ void display_prompt(WINDOW* win, char* varbuffer, char* prompt_info, int* show_p
                     break;
                 }
 
-                strcpy(varbuffer, msgbuff);
+                strlcpy(varbuffer, msgbuff, BUF_SIZE);
 
                 break;
             }
@@ -571,7 +630,7 @@ void display_prompt(WINDOW* win, char* varbuffer, char* prompt_info, int* show_p
             }
 
             clear_row(win, 16);
-            sprintf(prntbuff, "> %s", msgbuff);
+            snprintf(prntbuff, BUF_SIZE, "> %s", msgbuff);
         }
     }
 
@@ -581,6 +640,29 @@ void display_prompt(WINDOW* win, char* varbuffer, char* prompt_info, int* show_p
 
     if (varbuffer[0] && !does_element_exist(element_id))
         add_element(element_id, fn);
+}
+
+
+void paste_legend(WINDOW* win)
+{
+    paste_colored(win, 1, 5, 20, "W/S   -> Navigation");
+    paste_colored(win, 1, 5, 21, "Enter -> Action");
+}
+
+
+void menu_initial_loop_handler(WINDOW* win, int w, char* btns[], int btns_len, int* choice, int offsety, char* label)
+{
+    werase(win);
+
+    print_greeting(win, w);
+    print_buttons(win, btns, btns_len, choice, offsety, label);
+}
+
+
+void menu_final_loop_handler(WINDOW* win)
+{
+    box(win, 0, 0);
+    wrefresh(win);
 }
 
 
@@ -597,7 +679,7 @@ void download_from_link_menu(WINDOW* win, int scr_width)
 
     while (1)
     {
-        werase(win);
+        menu_initial_loop_handler(win, scr_width, menu, btn_len, &choice, 8, "[Download from file]");
 
         if (timer_start)
         {
@@ -611,26 +693,21 @@ void download_from_link_menu(WINDOW* win, int scr_width)
                 remove_element("dwn_empty");
             }
         }
-        
-        box(win, 0, 0);
-
-        print_greeting(win, scr_width);
-        print_buttons(win, menu, btn_len, &choice, 8, "[Download from link]");
 
         for (int i = 0; i < elements_len; i++)
             elements[i].fn(win);
 
+        menu_final_loop_handler(win);
+
         if (handle_dwnfromlink(win, menu, btn_len, &choice))
             return;
-
-        wrefresh(win);
     }
 }
 
 
 void download_from_file_menu(WINDOW* win, int scr_width)
 {
-    char *menu[] = { "Download", "Back" };
+    char *menu[] = { "Download", "Edit videos", "Update videos", "Back" };
 
     int choicev  = 0,
         btn_len  = sizeof(menu) / sizeof(char*),
@@ -638,89 +715,56 @@ void download_from_file_menu(WINDOW* win, int scr_width)
         msg_clr  = 1;
 
     int       *choice = &choicev;
-    FILE      *file   = fopen("videos.txt", "r");
     VideoItem *items  = NULL;
 
 
-    if (file == NULL)
-    {
-        msg_clr = 2;
-        sprintf(msg, "File 'videos.txt' could not be opened");
-    }   
-    else
-        download_from_file_menu_set_videoobject(file, &files_nr, &msg_clr, &items);
-
+    download_from_file_menu_set_videoobject(&files_nr, &msg_clr, &items);
 
     while (1)
     {
-        werase(win);
-
-        box(win, 0, 0);
-
-        print_greeting(win, scr_width);
-        print_buttons(win, menu, btn_len, choice, 8, "[Download from file]");
-
+        menu_initial_loop_handler(win, scr_width, menu, btn_len, choice, 8, "[Download from file]");
         paste_colored(win, msg_clr, 5, 15, msg);
-        
+
+        menu_final_loop_handler(win);
+
         switch (wgetch(win))
         {
             UpDownArrows;    
 
             case '\n':
-                if ( !strcmp(menu[*choice], "Back") )
+                switch (*choice)
                 {
-                    free(items);
-                    return; 
-                }
-
-                else if ( !strcmp(menu[*choice], "Download") )
-                {
-                    if (!files_nr)
-                        break;
-
-                    handle_dnwfromfile(win, items, files_nr); 
+                    case 0: 
+                        if (!files_nr) break; 
+                        handle_dnwfromfile(win, items, files_nr); break;
+                        
+                    case 1: open_path("videos.txt"); break;
+                    case 2: download_from_file_menu_set_videoobject(&files_nr, &msg_clr, &items); break;
+                    case 3: free(items); return;
                 }
         }
-
-        wrefresh(win);
     }
 }
 
 
 void read_config_menu(WINDOW* win, int scr_width)
 {
-    char *menu[]  = { "Open output directory", "Back" };
+    char *menu[]  = { "Open output directory", "Edit config", "Update config", "Back" };
     char  buffer[BUF_SIZE],
           cookies[BUF_SIZE],
           format[32];
 
-    int  vchoice = 0,
-         btn_len = sizeof(menu) / sizeof(char*);
-    int *choice  = &vchoice;
+    int vchoice = 0,
+        btn_len = sizeof(menu) / sizeof(char*);
+    int *choice = &vchoice;
     
 
-    if (config->type == AUDIO_ONLY)
-        strcpy(format, "Audio only");
-    else if (config->type == AUDIO_VIDEO)
-        strcpy(format, "Audio+Video");
-
-    if (!config->cookies[0] || config->cookies[0] == '0')
-        strcpy(cookies, "None");
-    else
-        strcpy(cookies, config->cookies);
-
+    update_config_text_output(format, cookies);
 
     while (1)
     {
-        werase(win);
-
-        box(win, 0, 0);
-
-        print_greeting(win, scr_width);
-        print_buttons(win, menu, btn_len, choice, 20, "[Configuration details]");
-
+        menu_initial_loop_handler(win, scr_width, menu, btn_len, choice, 18, "[Configuration details]");
         paste_colored(win, 4, 5, 8, "config.conf");
-
 
         if (!config->success)
         {
@@ -731,48 +775,96 @@ void read_config_menu(WINDOW* win, int scr_width)
 
             wattroff(win, COLOR_PAIR(2));
         }
-        else
-        {
-            sprintf(buffer, "[Output path]:    %s", config->output_path);
-            mvwprintw(win, 10, 5, buffer);
 
-            sprintf(buffer, "[Format type]:    %s", format);
-            mvwprintw(win, 11, 5, buffer);
+        snprintf(buffer, BUF_SIZE, "[Output path]:    %s", config->output_path);
+        mvwprintw(win, 10, 5, buffer);
 
-            sprintf(buffer, "[Audio-only ext]: %s", config->audio_ext);
-            mvwprintw(win, 12, 5, buffer);
+        snprintf(buffer, BUF_SIZE, "[Format type]:    %s", format);
+        mvwprintw(win, 11, 5, buffer);
 
-            sprintf(buffer, "[Cookies]:        %s", cookies);
-            mvwprintw(win, 13, 5, buffer);
-        }
+        snprintf(buffer, BUF_SIZE, "[Audio-only ext]: %s", config->audio_ext);
+        mvwprintw(win, 12, 5, buffer);
+
+        snprintf(buffer, BUF_SIZE, "[Cookies]:        %s", cookies);
+        mvwprintw(win, 13, 5, buffer);
         
+        menu_final_loop_handler(win);
 
         switch (wgetch(win))
         {
             UpDownArrows;
 
             case '\n':
-                if ( !strcmp(menu[vchoice], "Back") )
-                    return;
-
-                else if ( !strcmp(menu[vchoice], "Open output directory" ))
+                switch (vchoice)
                 {
-                    char buffer[BUF_SIZE];
-
-                    snprintf(buffer, sizeof(buffer), "xdg-open %s", config->output_path);
-                    system(buffer);
+                    case 0: open_path(config->output_path); break;
+                    case 1: open_path("config.conf"); break;
+                    case 2: init_config(); update_config_text_output(format, cookies); break;
+                    case 3: return;
                 }
         }
-
-        wrefresh(win);
     }
+}
+
+
+void about_menu(WINDOW* win, int scr_width)
+{
+    char *menu[] = { "Open github page", "Back" };
+    char *repo   = "https://github.com/vrecek/yt-dwn-ncurses";
+
+    char repo_msg[128];
+
+    int vchoice = 0,
+        btn_len = sizeof(menu) / sizeof(char*);
+    int *choice = &vchoice;
+    
+
+    snprintf(repo_msg, 128, "Repo URL:  %s", repo);
+
+    while (1)
+    {
+        menu_initial_loop_handler(win, scr_width, menu, btn_len, choice, 20, "[About]");
+
+        paste_colored(win, 1, 5, 6, "__     _________   _____                      _                 _           \n"
+        "     \\ \\   / /__   __| |  __ \\                    | |               | |          \n"
+        "      \\ \\_/ /   | |    | |  | | _____      ___ __ | | ___   __ _  __| | ___ _ __ \n"
+        "       \\   /    | |    | |  | |/ _ \\ \\ /\\ / / '_ \\| |/ _ \\ / _` |/ _` |/ _ \\ '__|\n"
+        "        | |     | |    | |__| | (_) \\ V  V /| | | | | (_) | (_| | (_| |  __/ |   \n"
+        "        |_|     |_|    |_____/ \\___/ \\_/\\_/ |_| |_|_|\\___/ \\__,_|\\__,_|\\___|_|"
+        );
+
+        mvwprintw(win, 13, 5, "Author:    vrecek");
+        mvwprintw(win, 14, 5, "Version:   v1.0");
+        mvwprintw(win, 15, 5, repo_msg);
+
+        menu_final_loop_handler(win);
+
+        switch (wgetch(win))
+        {
+            UpDownArrows;
+
+            case '\n':
+                switch (vchoice)
+                {
+                    case 0: open_path(repo); break;
+                    case 1: return;
+                }
+        }
+    }
+}
+
+
+void exit_cleaner()
+{
+    free(config);
+    free(elements);
 }
 
 
 
 /*  CONFIG FN  */
 
-Config* init_config()
+void init_config()
 {
     config = (Config*)malloc(sizeof(Config));
 
@@ -793,7 +885,7 @@ Config* init_config()
         config->type       = AUDIO_VIDEO;
         config->success    = 0;
 
-        return config;
+        return;
     }
 
     while ( fgets(buffer, sizeof(buffer), file) != NULL )
@@ -803,7 +895,7 @@ Config* init_config()
 
         token = strtok(buffer, " ");
 
-        strcpy(key, token);
+        strlcpy(key, token, BUF_SIZE);
 
         token = strtok(NULL, " ");
         len   = strlen(token);
@@ -813,16 +905,16 @@ Config* init_config()
 
 
         if ( !strcmp(key, "output_path") )
-            strcpy(config->output_path, token);
+            strlcpy(config->output_path, token, BUF_SIZE);
 
         else if ( !strcmp(key, "audio_ext") )
-            strcpy(config->audio_ext, token);
+            strlcpy(config->audio_ext, token, BUF_SIZE);
 
         else if ( !strcmp(key, "cookies") )
             if (token[0] == '0')
                 config->cookies[0] = '\0';
             else
-                strcpy(config->cookies, token);
+                strlcpy(config->cookies, token, BUF_SIZE);
 
         else if ( !strcmp(key, "type") )
             config->type = token[0] - '0';
@@ -832,5 +924,23 @@ Config* init_config()
 
     config->success = 1;
 
-    return config;
+    return;
+}
+
+
+
+/*  CHECK AVAILABILITY FN  */
+
+void check_availability()
+{
+    #ifndef __linux__
+        printf("[ERROR] Available only on Linux\n");
+        exit(1);
+    #endif
+
+    if (system("which yt-dlp &> /dev/null"))
+    {
+        printf("[ERROR] yt-dlp is not installed on the system\n");
+        exit(2);
+    }
 }
