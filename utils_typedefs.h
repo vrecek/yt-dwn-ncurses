@@ -33,8 +33,17 @@ typedef struct {
 
 
 typedef struct {
+    int  filebytes;
+    int  filemb;
+    char filepath[BUF_SIZE];
+    char filename[BUF_SIZE];
+} Metadata;
+
+
+typedef struct {
     char        output_path[BUF_SIZE];
     char        audio_ext[BUF_SIZE];
+    char        videofile_path[BUF_SIZE];
     char        cookies[BUF_SIZE];
     FileFormat  type;
     int         success;

@@ -26,7 +26,7 @@ void exit_cleaner();
 void menu_initial_loop_handler(WINDOW* win, int w, char* btns[], int btns_len, int* choice, int offsety, char* label);
 void menu_final_loop_handler(WINDOW* win);
 
-void check_availability();
+int check_availability();
 
 void init_config();
 

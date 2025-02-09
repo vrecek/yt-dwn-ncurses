@@ -6,7 +6,15 @@
 
 
 int main() {
-    check_availability();
+    int status = check_availability();
+
+    if (status)
+    {
+        printf("Press any key to exit\n");
+        scanf("%c");
+
+        return status;
+    }
 
     initscr(); 
     cbreak();
@@ -25,7 +33,7 @@ int main() {
     use_default_colors();
     init_config();
     
-    char *menu[] = { "Download from link", "Download from file", "Read config", "About", "Quit" };
+    char *menu[] = { "Download from url", "Download from file", "Read config", "About", "Quit" };
 
     int btn_len    = sizeof(menu) / sizeof(char*),
         vchoice    = 0,
@@ -72,8 +80,6 @@ int main() {
     exit_cleaner();
     delwin(win); 
     endwin(); 
-
-    printf("\n");
 
     return 0;
 }

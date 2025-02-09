@@ -1,9 +1,12 @@
 #include <string.h>
 #include <ncurses.h>
+#include <math.h>
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/stat.h>
+#include <glob.h>
 #include "utils_public.h"
 #include "utils_private.h"
 
@@ -37,11 +40,10 @@ pthread_mutex_t th_lock;
 void* start_animation(void* args)
 {
     AnimationArgs* obj = (AnimationArgs*)args;
-
     char* frames[] = { "[   ]", "[-  ]", "[-- ]", "[---]" };
-
     int frames_length = sizeof(frames) / sizeof(char*),
         current_frame = 0;
+
 
     while (1)
     {
@@ -126,34 +128,38 @@ void add_element(char* id, void(*fn)(WINDOW* win))
 
 /*  COMMON PRIVATE FN  */
 
-void craft_ytdlp_command(char* buffer, char* url, char* name)
+void craft_command_final(char* buffer, char* url, char* name, int* len)
 {
-    int len;
-
-    buffer[0] = '\0';
-
-    snprintf(buffer, BUF_SIZE, "yt-dlp -N 2 -P '%s'", config->output_path);
-    len = strlen(buffer);
-    
-    if (config->type == AUDIO_ONLY)
-    {
-        snprintf(buffer+len, BUF_SIZE-len, " -x --audio-format %s", config->audio_ext);
-        len = strlen(buffer);
-    }
-
     if (config->cookies[0])
     {
-        snprintf(buffer+len, BUF_SIZE-len, " --cookies '%s'", config->cookies);
-        len = strlen(buffer);
+        snprintf(buffer+*len, BUF_SIZE-*len, " --cookies '%s'", config->cookies);
+        *len = strlen(buffer);
+    }
+
+    if (config->type == AUDIO_ONLY)
+    {
+        snprintf(buffer+*len, BUF_SIZE-*len, " -x --audio-format %s", config->audio_ext);
+        *len = strlen(buffer);
     }
 
     if (name[0])
     {
-        snprintf(buffer+len, BUF_SIZE-len, " -o '%s'", name);
-        len = strlen(buffer);
+        snprintf(buffer+*len, BUF_SIZE-*len, " -o '%s'", name);
+        *len = strlen(buffer);
     }
 
-    snprintf(buffer+len, BUF_SIZE-len, " -- '%s' 2>&1", url);
+    snprintf(buffer+*len, BUF_SIZE-*len, " -- '%s' 2>&1", url);
+}
+
+
+void craft_ytdlp_command(char* buffer, char* url, char* name)
+{
+    int len;
+
+    snprintf(buffer, BUF_SIZE, "yt-dlp -N 2 -P '%s'", config->output_path);
+    len = strlen(buffer);
+
+    craft_command_final(buffer, url, name, &len);
 }
 
 
@@ -177,23 +183,29 @@ void open_path(char* path)
 {
     char buffer[BUF_SIZE];
 
-    snprintf(buffer, BUF_SIZE, "xdg-open %s", path);
+    snprintf(buffer, BUF_SIZE, "xdg-open '%s'", path);
     system(buffer);
 }
 
 
-void update_config_text_output(char* format, char* cookies)
+void update_config_text_output(char* format, char* cookies, char* videos_path)
 {
     if (config->type == AUDIO_ONLY)
         strcpy(format, "Audio only");
-    else if (config->type == AUDIO_VIDEO)
+    else
         strcpy(format, "Audio+Video");
 
 
     if (!config->cookies[0] || config->cookies[0] == '0')
-        strcpy(cookies, "None");
+        strcpy(cookies, "Not set");
     else
         strlcpy(cookies, config->cookies, BUF_SIZE);
+
+
+    if (!config->videofile_path[0] || config->videofile_path[0] == '0')
+        strcpy(videos_path, "Not set");
+    else
+        strlcpy(videos_path, config->videofile_path, BUF_SIZE);
 }
 
 
@@ -205,7 +217,79 @@ int check_download_error(char* output, char* error_container)
     else if (strstr(output, "Video unavailable"))
         strcpy(error_container, "[ERROR] Video is unavailable");
 
+    else if (strlen(output) == 2 && strstr(output, "NA"))
+        strcpy(error_container, "[ERROR] File size unknown");
+
+    else if (strstr(output, "Netscape format"))
+        strcpy(error_container, "[ERROR] Cookies file seems to be incorrect");
+
     return error_container[0];
+}
+
+
+void get_metadata(Metadata* data, char* url, char* name)
+{
+    char  buffer[BUF_SIZE],
+          error[BUF_SIZE];
+    FILE* pipe;
+    int   len;
+
+
+    snprintf(buffer, BUF_SIZE, "yt-dlp -O filesize_approx --get-filename -P '%s'", config->output_path);
+    len = strlen(buffer);
+
+    craft_command_final(buffer, url, name, &len);
+
+    pipe     = popen(buffer, "r");
+    error[0] = '\0';
+
+    if ( fgets(buffer, BUF_SIZE, pipe) )
+    {
+        if (!config->cookies[0])
+            data->filebytes = 0;
+        else
+            data->filebytes = check_download_error(buffer, error) ? 0 : atoi(buffer);
+
+        data->filemb = data->filebytes / pow(2, 20);
+    }
+
+    if ( fgets(buffer, BUF_SIZE, pipe) )
+        strlcpy(data->filepath, check_download_error(buffer, error) ? "\0" : buffer, BUF_SIZE);
+
+    fclose(pipe);
+}
+
+
+void retrieve_full_filename(Metadata* metadata)
+{
+    char   basename[BUF_SIZE],
+           buffer[BUF_SIZE];
+    FILE   *pipe;
+    glob_t matches;
+
+
+    snprintf(buffer, BUF_SIZE, "basename \"%s\"", metadata->filepath);
+
+    pipe = popen(buffer, "r");
+
+    fgets(basename, BUF_SIZE, pipe);
+    fclose(pipe);
+
+    snprintf(buffer, BUF_SIZE, "%s/%c*.part", config->output_path, basename[0]);
+    glob(buffer, 0, NULL, &matches);
+
+    if (matches.gl_pathc)
+        strlcpy(metadata->filename, matches.gl_pathv[0], BUF_SIZE);
+
+    globfree(&matches);
+}
+
+
+int get_current_size(char* file)
+{
+    struct stat s;
+
+    return stat(file, &s) ? -1 : s.st_size;
 }
 
 
@@ -249,12 +333,15 @@ void handle_dnwfromfile(WINDOW* win, VideoItem* items, size_t items_len)
 {
     int successes    = 0,
         skip_buffer  = 0,
-        screen_width = getmaxx(win) - 10;
+        screen_width = getmaxx(win) - 10,
+        current,
+        current_size;
 
     char buffer[BUF_SIZE],
          error[BUF_SIZE];
 
-    AnimationArgs args = {win, 5, 16};
+    AnimationArgs args      = {win, 5, 16};
+    Metadata      metadata  = {0};
     pthread_t     animation_th;
 
     FILE* pipe = NULL;
@@ -265,48 +352,64 @@ void handle_dnwfromfile(WINDOW* win, VideoItem* items, size_t items_len)
     for (int i = 0; i < items_len; i++)
     {
         error[0] = '\0';
+        metadata = (Metadata){0};
 
         pthread_mutex_lock(&th_lock);
-        print_colored(win, 4, 5, 15, "Fetching URL...");
+        print_colored(win, 4, 5, 15, "Fetching metadata...");
         pthread_mutex_unlock(&th_lock);
 
         craft_ytdlp_command(buffer, items[i].url, items[i].name);
+        get_metadata(&metadata, items[i].url, items[i].name);
+
+        if (!metadata.filepath[0])
+            strcpy(error, "[ERROR] URL is incorrect");
+
 
         pipe = popen(buffer, "r");
 
         if (!pipe)
-            continue;
+            strcpy(error, "[ERROR] Could not get the video");
 
-
-        while ( fgets(buffer, sizeof(buffer), pipe) != NULL )
+        if (!error[0])
         {
-            if (check_download_error(buffer, error))
+            char max[16] = "?";
+            current_size = 0;
+
+
+            if (metadata.filemb)
+                snprintf(max, 16, "%d", metadata.filemb);
+
+            while ( fgets(buffer, sizeof(buffer), pipe) != NULL )
             {
-                pthread_mutex_lock(&th_lock);
+                if (check_download_error(buffer, error))
+                    break;
 
-                print_colored(win, 2, 5, 15, error);
-                sleep(2);
+                if (metadata.filename[0])
+                {
+                    current = get_current_size(metadata.filename) / pow(2, 20);
+                    if (current)
+                        current_size = current;
+                }
+                else
+                    retrieve_full_filename(&metadata);
 
-                pthread_mutex_unlock(&th_lock);
-
-                break;
+                snprintf(buffer, BUF_SIZE, "Downloading %d/%d [%d / %s MB]", i+1, items_len, current_size, max);
+                print_colored(win, 4, 5, 15, buffer);
             }
 
-            if (skip_buffer) continue;
-
-            snprintf(buffer, BUF_SIZE, "Downloading: %d/%d (%s)", i+1, items_len, items[i].name);
-
-            pthread_mutex_lock(&th_lock);
-            print_colored(win, 4, 5, 15, buffer);
-            pthread_mutex_unlock(&th_lock);
-
-            skip_buffer = 1;
+            successes++;
         }
 
-        skip_buffer = 0;
-        !error[0] && successes++;
-
         fclose(pipe);
+
+        if (error[0])
+        {
+            pthread_mutex_lock(&th_lock);
+            print_colored(win, 2, 5, 15, error);
+            pthread_mutex_unlock(&th_lock);
+
+            sleep(2);
+        }
     }
 
     finish_animation(&animation_th);
@@ -318,7 +421,7 @@ void handle_dnwfromfile(WINDOW* win, VideoItem* items, size_t items_len)
 void download_from_file_menu_set_videoobject(int* files_nr, int* msg_clr, VideoItem** items)
 {
     char  buffer[BUF_SIZE];
-    FILE* file = fopen("videos.txt", "r");
+    FILE* file = fopen(config->videofile_path, "r");
 
 
     *items    = NULL;
@@ -327,7 +430,7 @@ void download_from_file_menu_set_videoobject(int* files_nr, int* msg_clr, VideoI
     if (file == NULL)
     {
         *msg_clr = 2;
-        sprintf(msg, "File 'videos.txt' could not be opened");
+        sprintf(msg, "File 'videos.txt' could not be opened. Check the config");
 
         return;
     }  
@@ -379,18 +482,20 @@ void download_file_link(WINDOW* win)
         return;
     }
 
-    AnimationArgs args = {win, 5, 16};
+    AnimationArgs args     = {win, 5, 16};
+    Metadata      metadata = {0};
     pthread_t     animation_th;
 
     int screen_width = getmaxx(win) - 10,
-        skip_buffer  = 0;
+        current_size = 0;
 
     char buffer[BUF_SIZE],
-         error[BUF_SIZE],
-         frame[16];
+         error[BUF_SIZE];
     
     FILE* pipe;
 
+
+    error[0] = '\0';
 
     remove_element("dwn_name");
     remove_element("dwn_url");
@@ -398,36 +503,55 @@ void download_file_link(WINDOW* win)
     clear_row(win, 19);
     clear_row(win, 20);
 
-    print_colored(win, 4, 5, 15, "Fetching URL...");
+    print_colored(win, 4, 5, 15, "Fetching metadata...");
 
     craft_ytdlp_command(buffer, f_url, f_name);
+    get_metadata(&metadata, f_url, f_name);
 
-
-    pipe     = popen(buffer, "r");
-    error[0] = '\0';
-
-    if (pipe == NULL)
-        return;
-
-
-    init_animation(&animation_th, &args);
-
-    while ( fgets(buffer, sizeof(buffer), pipe) != NULL )
+    if (!metadata.filepath[0])
     {
-        if (check_download_error(buffer, error))
-            break;
+        strcpy(error, "[ERROR] URL is incorrect");
+    }
+    else
+    {
+        pipe = popen(buffer, "r");
 
-        if (skip_buffer) continue;
+        if (pipe == NULL)
+            strcpy(error, "[ERROR] Could not get the video");
 
-        pthread_mutex_lock(&th_lock);
-        print_colored(win, 4, 5, 15, "Downloading, please wait");
-        pthread_mutex_unlock(&th_lock);
+        else
+        {
+            int  current;
+            char max[16] = "?";
 
-        skip_buffer = 1;
+            if (metadata.filemb)
+                snprintf(max, 16, "%d", metadata.filemb);
+
+            init_animation(&animation_th, &args);
+
+            while ( fgets(buffer, BUF_SIZE, pipe) != NULL )
+            {
+                if (check_download_error(buffer, error))
+                    break;
+
+                if (metadata.filename[0])
+                {
+                    current = get_current_size(metadata.filename) / pow(2, 20);
+                    if (current)
+                        current_size = current;
+                }
+                else
+                    retrieve_full_filename(&metadata);
+
+                snprintf(buffer, BUF_SIZE, "Downloading [%d / %s MB]", current_size, max);
+                print_colored(win, 4, 5, 15, buffer);
+            }
+
+            finish_animation(&animation_th);
+            pclose(pipe);
+        }
     }
 
-    finish_animation(&animation_th);
-    pclose(pipe);
 
     if (error[0])
     {
@@ -679,7 +803,7 @@ void download_from_link_menu(WINDOW* win, int scr_width)
 
     while (1)
     {
-        menu_initial_loop_handler(win, scr_width, menu, btn_len, &choice, 8, "[Download from file]");
+        menu_initial_loop_handler(win, scr_width, menu, btn_len, &choice, 8, "[Download from url]");
 
         if (timer_start)
         {
@@ -735,10 +859,15 @@ void download_from_file_menu(WINDOW* win, int scr_width)
                 switch (*choice)
                 {
                     case 0: 
-                        if (!files_nr) break; 
-                        handle_dnwfromfile(win, items, files_nr); break;
+                        if (files_nr)
+                            handle_dnwfromfile(win, items, files_nr); 
+                        break;
                         
-                    case 1: open_path("videos.txt"); break;
+                    case 1: 
+                        if (config->videofile_path[0]) 
+                            open_path(config->videofile_path); 
+                        break;
+
                     case 2: download_from_file_menu_set_videoobject(&files_nr, &msg_clr, &items); break;
                     case 3: free(items); return;
                 }
@@ -752,6 +881,7 @@ void read_config_menu(WINDOW* win, int scr_width)
     char *menu[]  = { "Open output directory", "Edit config", "Update config", "Back" };
     char  buffer[BUF_SIZE],
           cookies[BUF_SIZE],
+          videopath[BUF_SIZE],
           format[32];
 
     int vchoice = 0,
@@ -759,7 +889,7 @@ void read_config_menu(WINDOW* win, int scr_width)
     int *choice = &vchoice;
     
 
-    update_config_text_output(format, cookies);
+    update_config_text_output(format, cookies, videopath);
 
     while (1)
     {
@@ -785,8 +915,11 @@ void read_config_menu(WINDOW* win, int scr_width)
         snprintf(buffer, BUF_SIZE, "[Audio-only ext]: %s", config->audio_ext);
         mvwprintw(win, 12, 5, buffer);
 
-        snprintf(buffer, BUF_SIZE, "[Cookies]:        %s", cookies);
+        snprintf(buffer, BUF_SIZE, "[Videofile path]: %s", videopath);
         mvwprintw(win, 13, 5, buffer);
+
+        snprintf(buffer, BUF_SIZE, "[Cookies]:        %s", cookies);
+        mvwprintw(win, 14, 5, buffer);
         
         menu_final_loop_handler(win);
 
@@ -798,8 +931,11 @@ void read_config_menu(WINDOW* win, int scr_width)
                 switch (vchoice)
                 {
                     case 0: open_path(config->output_path); break;
-                    case 1: open_path("config.conf"); break;
-                    case 2: init_config(); update_config_text_output(format, cookies); break;
+                    case 1: 
+                        snprintf(buffer, BUF_SIZE, "%s/.config/ytdownloader/config.conf", getenv("HOME"));
+                        open_path(buffer); 
+                        break;
+                    case 2: init_config(); update_config_text_output(format, cookies, videopath); break;
                     case 3: return;
                 }
         }
@@ -864,22 +1000,67 @@ void exit_cleaner()
 
 /*  CONFIG FN  */
 
+void check_for_config_directory(char* config_file, char* home)
+{
+    char buffer[BUF_SIZE],
+         config_dir[BUF_SIZE];
+
+
+    snprintf(config_dir, BUF_SIZE, "%s/.config/ytdownloader", home);
+    snprintf(config_file, BUF_SIZE, "%s/config.conf", config_dir);
+
+    if (access(config_dir, F_OK))
+    {
+        snprintf(buffer, BUF_SIZE, "mkdir -p %s", config_dir);
+        system(buffer);
+    }
+
+    if (access(config_file, F_OK))
+    {
+        FILE* file = fopen(config_file, "w");
+
+        fprintf(file,
+        "# Path where to put the downloaded file(s)\n"
+        "output_path %s/Downloads\n\n"
+        "# Type of a downloaded file: (0=audio-only, 1=audio+video)\n"
+        "type 1\n\n"
+        "# Audio-only file extension\n"
+        "audio_ext mp3\n\n"
+        "# Path to the listed videos to download from (0=off)"
+        "from_file 0\n\n"
+        "# Path to YT verified account cookies, extracted from the browser, to download age restricted videos (0=off)\n"
+        "cookies 0", home
+        );
+
+        fclose(file);
+    }
+}
+
+
 void init_config()
 {
     config = (Config*)malloc(sizeof(Config));
 
     int   len;
-    char* token;
+    char  *token,
+          *home = getenv("HOME");
     char  buffer[BUF_SIZE],
+          config_file[BUF_SIZE],
           key[BUF_SIZE];
+    FILE* file;
 
-    FILE* file = fopen("config.conf", "r");
+
+    check_for_config_directory(config_file, home);
+
+    file = fopen(config_file, "r");
 
 
     if (file == NULL)
     {
-        strcpy(config->output_path, "~/Downloads");
+        snprintf(config->output_path, BUF_SIZE, "%s/Downloads", home);
         strcpy(config->audio_ext, "mp3");
+
+        config->videofile_path[0] = '\0';
 
         config->cookies[0] = '\0';
         config->type       = AUDIO_VIDEO;
@@ -905,13 +1086,31 @@ void init_config()
 
 
         if ( !strcmp(key, "output_path") )
+        {
+            if (access(token, F_OK))
+            {
+                char command[BUF_SIZE];
+
+                snprintf(command, BUF_SIZE, "mkdir -p %s", token);
+                system(command);
+            }
+
             strlcpy(config->output_path, token, BUF_SIZE);
+        }
+
+        else if ( !strcmp(key, "from_file") )
+        {
+            if (token[0] == '0' || access(token, F_OK))
+                config->videofile_path[0] = '\0';
+            else
+                strlcpy(config->videofile_path, token, BUF_SIZE);
+        }
 
         else if ( !strcmp(key, "audio_ext") )
             strlcpy(config->audio_ext, token, BUF_SIZE);
 
         else if ( !strcmp(key, "cookies") )
-            if (token[0] == '0')
+            if (token[0] == '0' || access(token, F_OK))
                 config->cookies[0] = '\0';
             else
                 strlcpy(config->cookies, token, BUF_SIZE);
@@ -931,16 +1130,18 @@ void init_config()
 
 /*  CHECK AVAILABILITY FN  */
 
-void check_availability()
+int check_availability()
 {
     #ifndef __linux__
         printf("[ERROR] Available only on Linux\n");
-        exit(1);
+        return 1;
     #endif
 
     if (system("which yt-dlp &> /dev/null"))
     {
         printf("[ERROR] yt-dlp is not installed on the system\n");
-        exit(2);
+        return 2;
     }
+
+    return 0;
 }
