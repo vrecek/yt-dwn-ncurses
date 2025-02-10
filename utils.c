@@ -1026,9 +1026,10 @@ void check_for_config_directory(char* config_file, char* home)
         "type 1\n\n"
         "# Audio-only file extension\n"
         "audio_ext mp3\n\n"
-        "# Path to the listed videos to download from (0=off)"
+        "# Path to the listed videos to download from (0=off)\n"
         "from_file 0\n\n"
         "# Path to YT verified account cookies, extracted from the browser, to download age restricted videos (0=off)\n"
+        "# Also, specyfing a correct file, ensures the corectness of the approximate filesize\n"
         "cookies 0", home
         );
 
