@@ -58,10 +58,7 @@ Each line should be separated be a newline, and should have two words separated 
 Absolute path of a verified youtube account cookie file. (default: 0)  
 It allows you to download age-restricted videos  
 File must be in a Netscape cookie file format. Depending on your browser, you can extract it using an extension, like `cookies.txt` (on firefox)  
-<<<<<<< HEAD
 ALSO, specyfing this, seems to fix the problem of an approximation of a file size
-=======
->>>>>>> d54c5ca04dea6947179e1cc5a81e9ab2a9571188
 > [!CAUTION]
 > Be cautious when downloading extensions, if some aren't malicious now, doesn't mean they won't be in the future
 
