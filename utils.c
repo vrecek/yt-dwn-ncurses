@@ -211,17 +211,26 @@ void update_config_text_output(char* format, char* cookies, char* videos_path)
 
 int check_download_error(char* output, char* error_container)
 {
-    if (strstr(output, "valid URL"))
-        strcpy(error_container, "[ERROR] URL is incorrect");
-
-    else if (strstr(output, "Video unavailable"))
+    if (strstr(output, "Video unavailable"))
         strcpy(error_container, "[ERROR] Video is unavailable");
+
+    else if (strstr(output, "Sign in to confirm your age"))
+        strcpy(error_container, "[ERROR] Age restricted video. Make sure a correct cookie file is available");
+
+    else if (strstr(output, "416"))
+        strcpy(error_container, "[ERROR] Video partially exists in the destination");
+
+    else if (strstr(output, "Requested format is not available"))
+        strcpy(error_container, "[ERROR] Format not available. Make sure you have the latest yt-dlp version installed");
 
     else if (strlen(output) == 2 && strstr(output, "NA"))
         strcpy(error_container, "[ERROR] File size unknown");
 
     else if (strstr(output, "Netscape format"))
         strcpy(error_container, "[ERROR] Cookies file seems to be incorrect");
+
+    else if (strstr(output, "not a valid URL"))
+        strcpy(error_container, "[ERROR] URL is incorrect");
 
     return error_container[0];
 }
@@ -353,7 +362,7 @@ void handle_dnwfromfile(WINDOW* win, VideoItem* items, size_t items_len)
     {
         error[0] = '\0';
         metadata = (Metadata){0};
-
+        
         pthread_mutex_lock(&th_lock);
         print_colored(win, 4, 5, 15, "Fetching metadata...");
         pthread_mutex_unlock(&th_lock);
@@ -507,6 +516,7 @@ void download_file_link(WINDOW* win)
 
     craft_ytdlp_command(buffer, f_url, f_name);
     get_metadata(&metadata, f_url, f_name);
+
 
     if (!metadata.filepath[0])
     {
